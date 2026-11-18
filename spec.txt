@@ -1,0 +1,126 @@
+tpt-vox: System Design Specification v1.0
+1. Executive Summary
+tpt-vox is a unified, Rust-native, high-performance audio inference engine designed for both real-time streaming (robotics, voice agents) and high-fidelity batch media generation (audiobooks, video dubbing).
+Unlike existing Python/C++ monoliths (e.g., Whisper.cpp, Piper) or bundled desktop suites (e.g., Wan2GP), tpt-vox is built from first principles to be no_std compatible, zero-copy, and heterogeneous. It natively leverages the tpt ecosystem—specifically tpt-archon (zero-copy memory), tpt-gpu (high-throughput VRAM), tpt-crucible (edge NPU/FPGA compilation), and tpt-tessera (decentralized mesh compute)—to deliver deterministic, mathematically verifiable, and offline-first audio processing.
+2. Core Design Principles
+Rust-First & no_std Native: The core audio pipeline, VAD (Voice Activity Detection), and routing logic contain zero standard library dependencies, allowing deployment on bare-metal microcontrollers, RTOS, and the tpt-archon microkernel.
+Zero-Copy Memory Architecture: Audio buffers (PCM/Float32) are memory-mapped via tpt-archon. Data flows directly from the audio capture driver to the GPU/NPU via DMA, eliminating the CPU-bound serialization/deserialization bottleneck.
+Heterogeneous Execution: Workloads are dynamically routed. Heavy, high-fidelity models run on tpt-gpu (VRAM), while ultra-low-latency streaming models are compiled via tpt-crucible for edge NPUs, FPGAs, or photonic meshes.
+Decentralized Fallback: If local compute is exhausted, tpt-vox seamlessly offloads inference to idle peers on the local mesh via tpt-tessera, maintaining SLAs without cloud dependency.
+Formally Verifiable Safety: Critical paths (VAD, audio routing, consensus) are designed for formal verification via tpt-telos, guaranteeing absolute error prevention in safety-critical environments (automotive, healthcare).
+3. High-Level Architecture
+
++-----------------------------------------------------------------------------------+
+|                              Application Layer (tpt-anima, tpt-eve)               |
++-----------------------------------------------------------------------------------+
+                                          |
+                                          v
++-----------------------------------------------------------------------------------+
+|                        tpt-vox API (Unified Rust Traits)                          |
+|  [ StreamingTranscriber ]  [ BatchTranscriber ]  [ ChunkSynthesizer ]             |
++-----------------------------------------------------------------------------------+
+                                          |
+            +-----------------------------+-----------------------------+
+            |                                                           |
+            v                                                           v
++-----------------------+                                     +-----------------------+
+|   tpt-vox-stream      |                                     |   tpt-vox-studio      |
+| (Real-time / Edge)    |                                     | (Media / Batch)       |
+| - Sub-200ms Latency   |                                     | - High Fidelity       |
+| - VAD & Barge-in      |                                     | - Phoneme Alignment   |
+| - Chunked Inference   |                                     | - Prosody/Emotion     |
++-----------------------+                                     +-----------------------+
+            |                                                           |
+            +-----------------------------+-----------------------------+
+                                          |
+                                          v
++-----------------------------------------------------------------------------------+
+|                         tpt-vox-core (Primitives & Zero-Copy)                     |
+|  [ AudioBuffer (tpt-archon mapped) ]  [ AudioStream ]  [ VoxError ]               |
++-----------------------------------------------------------------------------------+
+                                          |
+            +-----------------------------+-----------------------------+
+            |                                                           |
+            v                                                           v
++-----------------------+                                     +-----------------------+
+|   tpt-vox-gpu         |                                     |   tpt-vox-crucible    |
+| (tpt-gpu Backend)     |                                     | (tpt-crucible Backend)|
+| - Deterministic VRAM  |                                     | - NPU/FPGA Compilation|
+| - Custom CUDA/HIP     |                                     | - Quantized Edge Exec |
+| - DMA Zero-Copy       |                                     | - Near-Zero Power     |
++-----------------------+                                     +-----------------------+
+                                          |
+                                          v
++-----------------------------------------------------------------------------------+
+|                         tpt-vox-mesh (tpt-tessera Integration)                    |
+|  [ Peer Discovery ]  [ Dynamic Quorum Consensus ]  [ Secure Audio Relay ]         |
++-----------------------------------------------------------------------------------+
+
+4. Crate Breakdown & Responsibilities
+4.1. tpt-vox-core
+The foundational, no_std library.
+AudioBuffer<'a>: A zero-copy wrapper around tpt-archon memory pages. Holds raw PCM/Float32 data, sample rate, and channel info.
+AudioStream: An async iterator yielding audio chunks, designed for non-blocking, real-time playback.
+Traits: Defines StreamingTranscriber, BatchTranscriber, ChunkSynthesizer, and BatchSynthesizer.
+4.2. tpt-vox-stream (Real-Time Engine)
+Optimized for conversational AI, robotics, and live dictation.
+VAD & Barge-in: A lightweight, formally verified Voice Activity Detector. If the user speaks while TTS is playing, the stream is instantly aborted.
+Chunk-based STT: Processes audio in 100ms-500ms frames, outputting partial transcripts immediately.
+Target Hardware: Primarily tpt-crucible (Edge NPUs/FPGAs) for ultra-low power, with tpt-gpu as a high-throughput fallback.
+4.3. tpt-vox-studio (Media Engine)
+Optimized for audiobooks, video dubbing, and podcast generation.
+High-Fidelity Synthesis: Generates broadcast-quality audio using flow-matching or codec-language models.
+Metadata Extraction: Natively outputs word-level and phoneme-level timestamps (critical for auto-ducking music, generating subtitles, or 3D lip-sync).
+Batch Throughput: Processes long documents in parallel, maximizing GPU utilization.
+Target Hardware: Exclusively tpt-gpu to handle massive attention matrices and diffusion steps.
+4.4. tpt-vox-gpu & tpt-vox-crucible (Hardware Backends)
+Implementations of the tpt-vox-core traits.
+tpt-vox-gpu: Bypasses PyTorch/CUDA overhead. Uses tpt-gpu to manage VRAM deterministically (preventing GC stutter). Implements custom kernels for Mel-spectrogram extraction and audio cross-attention.
+tpt-vox-crucible: Takes ONNX/Safetensors models and compiles them directly to the instruction set of edge hardware (e.g., Rockchip NPUs, Intel Movidius, custom FPGAs).
+4.5. tpt-vox-mesh (Decentralized Compute)
+Integrates with tpt-tessera.
+If a local edge device (e.g., a robot) receives a complex STT request but lacks the local NPU capacity, tpt-vox-mesh encrypts the audio buffer and routes it to an idle peer (e.g., a parked car or local server) via Wi-Fi/BLE.
+Uses dynamic quorum consensus to ensure the transcription is accurate and resilient against Byzantine peer failures.
+5. Data Flow & Execution Models
+Scenario A: Real-Time Voice Agent (Robotics)
+Capture: Microphone captures audio, writing PCM directly to an tpt-archon zero-copy page.
+VAD: tpt-vox-stream (via tpt-crucible on an edge NPU) detects voice activity in <10ms.
+Transcription: Audio is DMA-transferred to tpt-gpu (or processed locally on NPU). A quantized streaming model (e.g., SenseVoice-Small) transcribes chunks.
+Inference: Text is sent to the LLM (tpt-anima).
+Synthesis: LLM response is streamed to tpt-vox-stream. A low-latency TTS (e.g., Piper or Kokoro-82M) generates audio chunks.
+Playback: Audio is played. If VAD detects user interruption, the TTS stream is aborted instantly.
+Scenario B: High-Fidelity Media (Audiobook Generation)
+Input: A 50,000-word text file is loaded.
+Routing: tpt-vox-studio chunks the text and routes it to tpt-vox-gpu.
+Synthesis: A massive flow-matching model (e.g., F5-TTS) runs on the GPU. tpt-gpu allocates VRAM deterministically for the audio diffusion steps.
+Output: High-fidelity WAV files are written to disk. Simultaneously, a JSON manifest containing phoneme-level timestamps is generated for downstream video/lip-sync tools.
+6. Safety, Privacy, and Compliance
+Offline-First & Privacy: By default, audio never leaves the local device. There are no cloud callbacks.
+Formal Verification (tpt-telos): The VAD logic and the tpt-vox-mesh routing consensus are written in a way that allows mathematical proof of correctness. This guarantees that a voice command to "stop" in a vehicle will never be dropped due to a buffer overflow or race condition.
+Compliance Ready: Because it is self-hostable and offline-first, it natively supports strict data sovereignty requirements (e.g., NZISM, HIPC 2020, HIPAA) out of the box, as sensitive voice data (healthcare, government) never traverses the public internet.
+7. Initial Target Models (The "Hero" Wrappers)
+We will not train models from scratch. We will build best-in-class Rust inference wrappers for the top open-weights models:
+For tpt-vox-stream (Real-Time):
+STT: SenseVoice-Small (highly accurate, fast, multi-lingual) or Whisper-Tiny/Small (quantized via Crucible).
+TTS: Piper (ultra-fast, low resource) or Kokoro-82M (excellent quality, very low latency).
+For tpt-vox-studio (Media):
+STT: Whisper-Large-v3-Turbo or SenseVoice-Large (maximum accuracy for batch processing).
+TTS: F5-TTS (zero-shot voice cloning, highly expressive) or Chatterbox (emotional control).
+8. Phased Rollout & Milestones
+Phase 1: Foundation & Core Primitives (Weeks 1-3)
+Initialize tpt-vox Cargo workspace.
+Implement tpt-vox-core: AudioBuffer, AudioStream, and core traits.
+Integrate tpt-archon zero-copy memory mapping for the audio buffers.
+Phase 2: The Streaming Engine & Edge (Weeks 4-7)
+Implement tpt-vox-stream.
+Build the lightweight, verifiable VAD module.
+Wrap a quantized STT model (e.g., Whisper-Tiny) and run it via tpt-crucible on an edge target (e.g., ARM NPU).
+Phase 3: The Studio Engine & GPU (Weeks 8-12)
+Implement tpt-vox-studio.
+Build tpt-vox-gpu backend. Implement custom CUDA/HIP kernels for Mel-spectrogram extraction.
+Wrap Kokoro (for fast TTS) and F5-TTS (for media TTS) utilizing tpt-gpu for deterministic VRAM management.
+Implement phoneme-level timestamp extraction.
+Phase 4: Mesh Integration & Verification (Weeks 13-16)
+Implement tpt-vox-mesh to allow tpt-tessera peer-to-peer audio routing.
+Apply tpt-telos formal verification proofs to the VAD and mesh routing logic.
+Release v1.0.
